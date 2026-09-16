@@ -1,0 +1,31 @@
+name: API drift
+
+# Checks the client against the live TypeSafe API: weekly, and on demand.
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  live:
+    name: Live API
+    runs-on: ubuntu-latest
+    env:
+      TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: OpenAPI spec and error handling (no key needed)
+        run: >-
+          cargo test -p typesafe-client --test live --locked -- --ignored
+          rejects_an_invalid_api_key vendored_openapi_spec_matches_live_spec
+      - name: Model calls (needs the TYPESAFE_API_KEY secret)
+        if: env.TYPESAFE_API_KEY != ''
+        run: cargo test -p typesafe-client --test live --locked -- --ignored

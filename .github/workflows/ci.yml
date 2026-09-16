@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: Format and copies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+      - name: README and license copies match
+        run: |
+          cmp README.md crates/typesafe-client/README.md
+          cmp LICENSE-MIT crates/typesafe-client/LICENSE-MIT
+          cmp LICENSE-APACHE crates/typesafe-client/LICENSE-APACHE
+
+  clippy:
+    name: Clippy (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default features
+            flags: ""
+          - name: no default features
+            flags: --no-default-features
+          - name: fake only
+            flags: --no-default-features --features fake
+          - name: all features
+            flags: --all-features
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy-${{ matrix.name }}
+      - run: cargo clippy -p typesafe-client --all-targets --locked ${{ matrix.flags }} -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: All features (unit, integration, doctests)
+        run: cargo test -p typesafe-client --all-features --locked
+      - name: Without HTTP
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p typesafe-client --no-default-features --lib --tests --locked
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: rustdoc, all feature sets
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo +stable doc -p typesafe-client --no-deps --locked --all-features
+          cargo +stable doc -p typesafe-client --no-deps --locked --no-default-features
+      - name: As docs.rs builds it
+        env:
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+        run: cargo +nightly doc -p typesafe-client --no-deps --locked --all-features
+
+  msrv:
+    name: Minimum Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Keep in sync with `rust-version` in Cargo.toml.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.87"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p typesafe-client --lib --all-features --locked
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo package -p typesafe-client --locked

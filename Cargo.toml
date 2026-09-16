@@ -1,0 +1,35 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+# Set by the `http` feature's dependencies: yoke-derive (via reqwest -> url -> idna) calls
+# `str::from_utf8`, stable since 1.87. Keep in sync with the `msrv` job in ci.yml.
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/JedimEmO/typesafe-client"
+
+[workspace.dependencies]
+async-trait = "0.1.80"
+fastrand = "2.3"
+httpdate = "1.0"
+indexmap = { version = "2.7", features = ["serde"] }
+jsonschema = { version = "0.56", default-features = false }
+reqwest = { version = "0.13", default-features = false, features = ["http2", "rustls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["time"] }
+wiremock = "0.6"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+unwrap_used = "warn"
+
+[workspace.lints.rust]
+unsafe_code = "deny"

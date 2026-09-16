@@ -1,0 +1,63 @@
+[package]
+name = "typesafe-client"
+version = "0.1.0"
+description = "Unofficial typed async Rust client for the TypeSafe System One API"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/typesafe-client"
+readme = "README.md"
+keywords = ["typesafe", "ai", "classification", "api-client", "llm"]
+categories = ["api-bindings", "web-programming::http-client"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["http"]
+# Async HTTP client (reqwest + rustls). Without it the crate provides the request and
+# response types, question builders and validation, with no IO dependencies.
+http = ["dep:fastrand", "dep:httpdate", "dep:reqwest", "dep:tokio"]
+# `FakeSystemOne`: an in-memory `SystemOne` implementation for testing code that uses
+# the client. No extra dependencies; enable it in your `[dev-dependencies]`.
+fake = []
+
+[dependencies]
+async-trait.workspace = true
+indexmap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+fastrand = { workspace = true, optional = true }
+httpdate = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+jsonschema.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+# Enables the `fake` feature for this crate's own tests and doctests.
+typesafe-client = { path = ".", default-features = false, features = ["fake"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock.workspace = true
+
+[[test]]
+name = "http_client"
+required-features = ["http"]
+
+[[test]]
+name = "live"
+required-features = ["http"]
+
+[[example]]
+name = "triage"
+required-features = ["http"]
+
+[[example]]
+name = "audit"
+required-features = ["http"]
+
+[lints]
+workspace = true
