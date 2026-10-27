@@ -15,6 +15,8 @@ mod choice_options;
 pub mod constants;
 mod content;
 mod error;
+#[cfg(feature = "images")]
+pub mod images;
 mod question;
 mod request;
 mod retry;
@@ -29,12 +31,18 @@ pub use answer::{
     Answer, ChoiceAnswer, ModelList, ModelMetadata, NoulAnswer, ReadAnswer, ScoreAnswer,
     SystemOneResponse, Usage,
 };
+#[cfg(feature = "images")]
+pub use answer::{BoxAnswer, BoxCoordinates, PixelBox};
 pub use api_error::{ApiError, ApiErrorKind, FieldError};
 #[doc(hidden)]
 pub use choice_options::__str_eq;
 pub use choice_options::{ChoiceOptions, EnumChoice, TypedChoice, ValueChoice};
 pub use content::Content;
 pub use error::{AnswerError, Error, TransportError, ValidationError};
+#[cfg(feature = "images")]
+pub use images::{Assets, Image, ImageFormat, ImageRef};
+#[cfg(feature = "images")]
+pub use question::BoxQuestion;
 pub use question::{
     ChoiceQuestion, NoulCriteria, NoulQuestion, Question, QuestionKind, ScoreQuestion,
 };

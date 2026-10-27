@@ -267,3 +267,88 @@ async fn lists_configured_models() {
 
     assert_eq!(fake.list_models().await.unwrap().models[0].name, "jev-1.12");
 }
+
+#[cfg(feature = "images")]
+mod images {
+    use std::sync::Arc;
+
+    use serde_json::json;
+    use typesafe_client::fake::FakeSystemOne;
+    use typesafe_client::{
+        Assets, BoxAnswer, BoxCoordinates, BoxQuestion, Error, Image, NoulQuestion, QuestionKey,
+        Questions, SystemOne, ValidationError,
+    };
+
+    const PNG: &[u8] = include_bytes!("fixtures/red-rectangle.png");
+
+    fn mug_request() -> (Questions, Assets, serde_json::Value) {
+        let mut assets = Assets::new();
+        let photo = assets.add(Image::png(PNG.to_vec()));
+        let mut questions = Questions::new();
+        questions.add("visible", NoulQuestion::new("Is there a mug in `photo`?"));
+        questions.add("mug", BoxQuestion::new("the mug in `photo`"));
+        (questions, assets, json!({"photo": photo}))
+    }
+
+    #[tokio::test]
+    async fn covers_the_whole_image_with_zero_confidence_when_a_box_is_not_configured() {
+        let fake = Arc::new(FakeSystemOne::new());
+        let mut assets = Assets::new();
+        let photo = assets.add(Image::png(PNG.to_vec()));
+        let mut questions = Questions::new();
+        let mug = questions.add("mug", BoxQuestion::new("the mug in `photo`"));
+
+        let response = fake
+            .system_one(json!({"photo": photo}), questions)
+            .assets(assets)
+            .send()
+            .await
+            .unwrap();
+
+        let mug = response.answer(&mug).unwrap();
+        assert_eq!(mug.bounds, BoxCoordinates::FULL_IMAGE);
+        assert_eq!(mug.confidence, Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn answers_a_configured_box_and_records_the_images_sent() {
+        let fake = Arc::new(FakeSystemOne::new());
+        let bounds = BoxCoordinates::new(0.25, 0.82, 0.44, 0.84);
+        fake.set_box("mug", bounds);
+        let (questions, assets, state) = mug_request();
+        let mug = QuestionKey::<BoxAnswer>::new("mug");
+
+        let response = fake
+            .system_one(state, questions)
+            .assets(assets.clone())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.answer(&mug).unwrap().bounds, bounds);
+        assert_eq!(response.answer(&mug).unwrap().confidence, Some(1.0));
+        assert_eq!(fake.last_request().unwrap().assets, assets);
+    }
+
+    #[tokio::test]
+    async fn rejects_image_requests_the_api_would_reject() {
+        let fake = Arc::new(FakeSystemOne::new());
+        let mut questions = Questions::new();
+        questions.add("mug", BoxQuestion::new("the mug"));
+
+        let error = fake
+            .system_one("no image", questions)
+            .send()
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                Error::InvalidRequest(ValidationError::BoxWithoutImage { .. })
+            ),
+            "{error:?}"
+        );
+        assert_eq!(fake.request_count(), 0);
+    }
+}

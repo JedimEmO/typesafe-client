@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use typesafe_client::constants::{IMAGES_HEADER, LONG_CONTEXT_HEADER};
 use typesafe_client::{
     AnswerError, ApiErrorKind, ChoiceQuestion, Client, Error, NoulQuestion, Questions, RetryPolicy,
     SystemOne, ValidationError,
@@ -641,4 +642,95 @@ async fn exposes_rejected_fields_of_a_validation_response() {
     assert_eq!(fields[0].kind.as_deref(), Some("string_type"));
     assert_eq!(error.status(), Some(422));
     assert!(!error.is_retryable());
+}
+
+#[tokio::test]
+async fn sends_no_danger_zone_headers_for_a_plain_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(SYSTEM_ONE))
+        .respond_with(ok_response())
+        .mount(&server)
+        .await;
+    let (questions, _) = urgency_question();
+
+    client_for(&server)
+        .system_one("state", questions)
+        .send()
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(!requests[0].headers.contains_key(IMAGES_HEADER));
+    assert!(!requests[0].headers.contains_key(LONG_CONTEXT_HEADER));
+}
+
+#[tokio::test]
+async fn sends_long_context_header_when_the_call_asks_for_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(SYSTEM_ONE))
+        .and(header(LONG_CONTEXT_HEADER, "true"))
+        .respond_with(ok_response())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (questions, _) = urgency_question();
+
+    client_for(&server)
+        .system_one("a very long contract", questions)
+        .long_context()
+        .send()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn reports_context_length_exceeded_without_retrying() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(SYSTEM_ONE))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_json(json!({"detail": {"error_type": "max_tokens_exceeded"}})),
+        )
+        .mount(&server)
+        .await;
+    let (questions, _) = urgency_question();
+
+    let error = client_for(&server)
+        .system_one("state", questions)
+        .send()
+        .await
+        .unwrap_err();
+
+    let api = error.api().expect("an API error");
+    assert!(api.is_context_length_exceeded());
+    assert_eq!(api.kind, ApiErrorKind::BadRequest);
+    assert!(!error.is_retryable());
+    assert_eq!(request_count(&server).await, 1);
+}
+
+#[tokio::test]
+async fn reports_payload_too_large_without_retrying() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(SYSTEM_ONE))
+        .respond_with(ResponseTemplate::new(413))
+        .mount(&server)
+        .await;
+    let (questions, _) = urgency_question();
+
+    let error = client_for(&server)
+        .system_one("state", questions)
+        .send()
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.api().map(|api| api.kind),
+        Some(ApiErrorKind::PayloadTooLarge)
+    );
+    assert_eq!(error.api().unwrap().message, "Payload Too Large");
+    assert_eq!(request_count(&server).await, 1);
 }

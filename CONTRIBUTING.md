@@ -14,7 +14,12 @@ cargo fmt --all
 cargo clippy -p typesafe-client --all-targets --all-features -- -D warnings
 cargo test -p typesafe-client --all-features
 cargo test -p typesafe-client --no-default-features --lib --tests
+cargo test -p typesafe-client --no-default-features --features images,fake --lib --tests
+cargo test -p typesafe-client --doc
 ```
+
+The last two catch code and doctests that only compile with one combination of `images` and
+`http`.
 
 The test suite needs no network access or API key:
 
@@ -24,6 +29,7 @@ The test suite needs no network access or API key:
 | `tests/docs_examples.rs` | Requests serialize to the JSON in TypeSafe's API reference, and documented responses parse |
 | `tests/openapi_contract.rs` | Requests and responses validate against the vendored OpenAPI spec |
 | `tests/http_client.rs` | HTTP behavior against an in-process mock server: headers, errors, retries, deadlines |
+| `tests/http_images.rs` | The multipart body and images header the client sends for requests with images |
 | `tests/fake.rs` | `FakeSystemOne` used the way application tests would use it |
 | Doctests | Every example in the README and the API docs |
 

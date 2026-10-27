@@ -1,6 +1,8 @@
 use std::time::Duration;
 
 use crate::constants::API_KEY_ENV;
+#[cfg(feature = "images")]
+use crate::images::{MAX_IMAGE_BYTES, MAX_REFERENCE_BYTES, MAX_TOTAL_REFERENCE_BYTES};
 use crate::request::{MAX_CHOICE_OPTIONS, MAX_SCORE_LEVELS, MIN_SCORE_LEVELS};
 use crate::{ApiError, QuestionKind, retry};
 
@@ -44,6 +46,56 @@ pub enum ValidationError {
         id: String,
         /// How many levels it has.
         count: usize,
+    },
+    /// A Box question was asked in a request without images.
+    #[cfg(feature = "images")]
+    #[error("box question `{id}` needs an image in the request")]
+    BoxWithoutImage {
+        /// The question's id.
+        id: String,
+    },
+    /// An image's reference appears nowhere in the state, instructions or criteria.
+    #[cfg(feature = "images")]
+    #[error("image `{reference}` is not referenced in the state, instructions or criteria")]
+    UnreferencedImage {
+        /// The unused reference.
+        reference: String,
+    },
+    /// An image reference is empty or whitespace.
+    #[cfg(feature = "images")]
+    #[error("an image reference is empty")]
+    EmptyImageReference,
+    /// An image reference is longer than [`MAX_REFERENCE_BYTES`].
+    #[cfg(feature = "images")]
+    #[error("an image reference is {bytes} bytes; at most {MAX_REFERENCE_BYTES} are allowed")]
+    ImageReferenceTooLong {
+        /// The reference's length in bytes.
+        bytes: usize,
+    },
+    /// The request's image references are longer than [`MAX_TOTAL_REFERENCE_BYTES`] together.
+    #[cfg(feature = "images")]
+    #[error(
+        "the image references total {bytes} bytes; at most {MAX_TOTAL_REFERENCE_BYTES} are allowed"
+    )]
+    ImageReferencesTooLong {
+        /// The references' total length in bytes.
+        bytes: usize,
+    },
+    /// An image's bytes are not a PNG or JPEG file.
+    #[cfg(feature = "images")]
+    #[error("image `{reference}` is not a PNG or JPEG file")]
+    NotAnImage {
+        /// The image's reference.
+        reference: String,
+    },
+    /// An image file is larger than [`MAX_IMAGE_BYTES`].
+    #[cfg(feature = "images")]
+    #[error("image `{reference}` is {bytes} bytes; at most {MAX_IMAGE_BYTES} are allowed")]
+    ImageTooLarge {
+        /// The image's reference.
+        reference: String,
+        /// The file's size in bytes.
+        bytes: usize,
     },
 }
 

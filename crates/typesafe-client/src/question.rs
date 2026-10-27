@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Content;
 
-/// The three TypeSafe question types.
+/// The TypeSafe question types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum QuestionKind {
@@ -15,6 +15,9 @@ pub enum QuestionKind {
     Choice,
     /// A position on ordered levels.
     Score,
+    /// Where something is in an image (feature `images`).
+    #[cfg(feature = "images")]
+    Box,
 }
 
 impl QuestionKind {
@@ -24,6 +27,8 @@ impl QuestionKind {
             Self::Noul => "noul",
             Self::Choice => "choice",
             Self::Score => "score",
+            #[cfg(feature = "images")]
+            Self::Box => "box",
         }
     }
 }
@@ -45,6 +50,9 @@ pub enum Question {
     Choice(ChoiceQuestion),
     /// A question that rates on ordered levels.
     Score(ScoreQuestion),
+    /// A question that locates something in an image (feature `images`).
+    #[cfg(feature = "images")]
+    Box(BoxQuestion),
 }
 
 impl Question {
@@ -54,6 +62,8 @@ impl Question {
             Self::Noul(_) => QuestionKind::Noul,
             Self::Choice(_) => QuestionKind::Choice,
             Self::Score(_) => QuestionKind::Score,
+            #[cfg(feature = "images")]
+            Self::Box(_) => QuestionKind::Box,
         }
     }
 }
@@ -73,6 +83,13 @@ impl From<ChoiceQuestion> for Question {
 impl From<ScoreQuestion> for Question {
     fn from(question: ScoreQuestion) -> Self {
         Self::Score(question)
+    }
+}
+
+#[cfg(feature = "images")]
+impl From<BoxQuestion> for Question {
+    fn from(question: BoxQuestion) -> Self {
+        Self::Box(question)
     }
 }
 
@@ -234,6 +251,44 @@ impl ScoreQuestion {
     }
 }
 
+/// Locates what its instructions describe in the request's image. The answer is a
+/// [`BoxAnswer`](crate::BoxAnswer): the four edges of a box around the target.
+///
+/// Name the target and the image: "the coffee mug in `photo`". A Box always answers with a
+/// box, even when the target is absent, so ask a [`NoulQuestion`] alongside it when the
+/// target may be missing. One Box finds one target; ask one per thing to find. See
+/// [Box](https://docs.typesafe.ai/primitives/box) for how to write them.
+///
+/// Requests with a Box question need at least one image (see [`Assets`](crate::Assets)).
+/// Box questions need Jev 1.14 or newer.
+///
+/// ```
+/// use typesafe_client::{BoxQuestion, NoulQuestion, Questions};
+///
+/// let mut questions = Questions::new();
+/// let visible = questions.add("mug_visible", NoulQuestion::new("Is there a coffee mug in `photo`?"));
+/// let mug = questions.add("mug", BoxQuestion::new("the coffee mug in `photo`"));
+/// # let _ = (visible, mug);
+/// ```
+#[cfg(feature = "images")]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct BoxQuestion {
+    /// What to locate, and in which image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<Content>,
+}
+
+#[cfg(feature = "images")]
+impl BoxQuestion {
+    /// A Box locating what `instructions` describe.
+    pub fn new(instructions: impl Into<Content>) -> Self {
+        Self {
+            instructions: Some(instructions.into()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -301,6 +356,24 @@ mod tests {
                 QuestionKind::Choice,
                 QuestionKind::Score
             ]
+        );
+    }
+
+    #[cfg(feature = "images")]
+    #[test]
+    fn serializes_box_questions_with_instructions_only() {
+        let question = Question::from(BoxQuestion::new("the coffee mug in `photo`"));
+
+        assert_eq!(question.kind(), QuestionKind::Box);
+        assert_eq!(
+            serde_json::to_value(&question).unwrap(),
+            json!({"type": "box", "instructions": "the coffee mug in `photo`"})
+        );
+        assert_eq!(
+            serde_json::from_value::<Question>(json!({"type": "box", "instructions": "x"}))
+                .unwrap()
+                .kind(),
+            QuestionKind::Box
         );
     }
 }

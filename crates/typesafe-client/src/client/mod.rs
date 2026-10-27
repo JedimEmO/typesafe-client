@@ -34,7 +34,7 @@ pub use crate::constants::{
     API_KEY_ENV, BASE_URL_ENV, DEFAULT_BASE_URL, DEFAULT_MODEL, DEFAULT_MODEL_ENV, DEFAULT_TIMEOUT,
     REQUEST_ID_HEADER,
 };
-use crate::constants::{MODELS_PATH, SYSTEM_ONE_PATH};
+use crate::constants::{IMAGES_HEADER, LONG_CONTEXT_HEADER, MODELS_PATH, SYSTEM_ONE_PATH};
 use crate::{
     ApiError, CallOptions, Content, Error, ModelList, Questions, RetryPolicy, SystemOne,
     SystemOneCall, SystemOneRequest, SystemOneResponse, TransportError,
@@ -149,22 +149,23 @@ impl Client {
         if self.inner.validate_requests {
             request.validate()?;
         }
-        let body = serde_json::to_vec(&WireRequest {
-            state: &request.state,
-            model: request
-                .model
-                .as_deref()
-                .unwrap_or(&self.inner.default_model),
-            questions: &request.questions,
-        })?;
+        let model = request
+            .model
+            .as_deref()
+            .unwrap_or(&self.inner.default_model);
+        let body = RequestBody::new(request, model)?;
+        let uses_images = request.uses_images();
         let url = self.endpoint(SYSTEM_ONE_PATH);
         let (mut response, request_id): (SystemOneResponse, _) = self
             .send_with_retry(options, || {
-                self.inner
-                    .http
-                    .post(&url)
-                    .header(CONTENT_TYPE, "application/json")
-                    .body(body.clone())
+                let mut builder = self.inner.http.post(&url);
+                if uses_images {
+                    builder = builder.header(IMAGES_HEADER, "true");
+                }
+                if options.long_context {
+                    builder = builder.header(LONG_CONTEXT_HEADER, "true");
+                }
+                body.attach(builder)
             })
             .await?;
         response.request_id = request_id;
@@ -264,6 +265,100 @@ struct WireRequest<'a> {
     state: &'a Content,
     model: &'a str,
     questions: &'a Questions,
+    #[cfg(feature = "images")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assets: Option<indexmap::IndexMap<&'a str, WirePartAsset>>,
+}
+
+/// An image asset whose bytes are in the multipart part `part`.
+#[cfg(feature = "images")]
+#[derive(Serialize)]
+struct WirePartAsset {
+    r#type: &'static str,
+    format: crate::ImageFormat,
+    part: String,
+}
+
+/// A request body, rebuilt into each attempt's HTTP request.
+enum RequestBody<'a> {
+    /// The JSON body. The marker keeps the lifetime used when `images` is off.
+    Json(Vec<u8>, std::marker::PhantomData<&'a ()>),
+    /// The JSON request as the first part, named `request`, then one file part per image.
+    #[cfg(feature = "images")]
+    Multipart {
+        request: Vec<u8>,
+        images: Vec<(String, &'a crate::Image)>,
+    },
+}
+
+impl<'a> RequestBody<'a> {
+    fn new(request: &'a SystemOneRequest, model: &'a str) -> Result<Self, Error> {
+        #[cfg(feature = "images")]
+        if !request.assets.is_empty() {
+            let images: Vec<(String, &crate::Image)> = request
+                .assets
+                .iter()
+                .enumerate()
+                .map(|(index, (_, image))| (format!("image-{index}"), image))
+                .collect();
+            let assets = request
+                .assets
+                .iter()
+                .zip(&images)
+                .map(|((reference, image), (part, _))| {
+                    let asset = WirePartAsset {
+                        r#type: "image",
+                        format: image.format(),
+                        part: part.clone(),
+                    };
+                    (reference.as_str(), asset)
+                })
+                .collect();
+            let request = serde_json::to_vec(&WireRequest {
+                state: &request.state,
+                model,
+                questions: &request.questions,
+                assets: Some(assets),
+            })?;
+            return Ok(Self::Multipart { request, images });
+        }
+        let body = serde_json::to_vec(&WireRequest {
+            state: &request.state,
+            model,
+            questions: &request.questions,
+            #[cfg(feature = "images")]
+            assets: None,
+        })?;
+        Ok(Self::Json(body, std::marker::PhantomData))
+    }
+
+    fn attach(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self {
+            Self::Json(body, _) => builder
+                .header(CONTENT_TYPE, "application/json")
+                .body(body.clone()),
+            #[cfg(feature = "images")]
+            Self::Multipart { request, images } => {
+                use reqwest::multipart::{Form, Part};
+
+                let json = Part::bytes(request.clone())
+                    .mime_str("application/json")
+                    .expect("application/json is a valid MIME type");
+                let form =
+                    images
+                        .iter()
+                        .fold(Form::new().part("request", json), |form, (name, image)| {
+                            let format = image.format();
+                            let part = Part::bytes(image.data().to_vec())
+                                .file_name(format!("{name}.{format}"))
+                                .mime_str(format.mime_type())
+                                .expect("image MIME types are valid");
+                            form.part(name.clone(), part)
+                        });
+                builder.multipart(form)
+            }
+        }
+    }
 }
 
 fn transport_error(error: reqwest::Error) -> Error {

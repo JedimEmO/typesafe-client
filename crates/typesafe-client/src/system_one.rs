@@ -82,6 +82,10 @@ pub struct CallOptions {
     pub timeout: Option<Duration>,
     /// Retry policy; `None` uses the transport's default.
     pub retry: Option<RetryPolicy>,
+    /// Raises the per-request and per-question context to 262k tokens by sending
+    /// `TypeSafe-Danger-Zone-Long-Context: true`. It costs the same per token but is
+    /// slower and less accurate, so turn it on only for requests that need it.
+    pub long_context: bool,
 }
 
 impl CallOptions {
@@ -96,6 +100,13 @@ impl CallOptions {
     #[must_use]
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
         self.retry = Some(retry);
+        self
+    }
+
+    /// Turns on long context; see [`CallOptions::long_context`].
+    #[must_use]
+    pub fn with_long_context(mut self) -> Self {
+        self.long_context = true;
         self
     }
 }
@@ -156,6 +167,21 @@ impl<T: SystemOne> SystemOneCall<T> {
     /// Retry policy for this call.
     pub fn retry(mut self, retry: RetryPolicy) -> Self {
         self.options.retry = Some(retry);
+        self
+    }
+
+    /// Raises the context limits to 262k tokens for this call. Slower and less accurate
+    /// than staying within the default limits; see [`CallOptions::long_context`].
+    pub fn long_context(mut self) -> Self {
+        self.options.long_context = true;
+        self
+    }
+
+    /// Sends `assets` with the request: the images its state, instructions and criteria
+    /// reference (feature `images`).
+    #[cfg(feature = "images")]
+    pub fn assets(mut self, assets: crate::Assets) -> Self {
+        self.request.assets = assets;
         self
     }
 

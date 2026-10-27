@@ -5,6 +5,8 @@ use std::marker::PhantomData;
 use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+#[cfg(feature = "images")]
+use crate::{Assets, BoxAnswer, BoxQuestion};
 use crate::{
     ChoiceAnswer, ChoiceQuestion, Content, NoulAnswer, NoulQuestion, Question, ReadAnswer,
     ScoreAnswer, ScoreQuestion, ValidationError,
@@ -120,6 +122,15 @@ impl IntoQuestion for ScoreQuestion {
     }
 }
 
+#[cfg(feature = "images")]
+impl IntoQuestion for BoxQuestion {
+    type Answer = BoxAnswer;
+
+    fn into_question(self) -> Question {
+        Question::Box(self)
+    }
+}
+
 /// The named questions of one request.
 ///
 /// All questions see the same state and are answered independently and in parallel, so
@@ -203,6 +214,8 @@ impl Questions {
         for (id, question) in &self.entries {
             match question {
                 Question::Noul(_) => {}
+                #[cfg(feature = "images")]
+                Question::Box(_) => {}
                 Question::Choice(choice) => match choice.criteria.len() {
                     0 => return Err(ValidationError::ChoiceWithoutOptions { id: id.clone() }),
                     count if count > MAX_CHOICE_OPTIONS => {
@@ -275,6 +288,10 @@ pub struct SystemOneRequest {
     pub model: Option<String>,
     /// The questions to ask about the state.
     pub questions: Questions,
+    /// Images referenced from the state, instructions or criteria (feature `images`).
+    #[cfg(feature = "images")]
+    #[serde(default, skip_serializing_if = "Assets::is_empty")]
+    pub assets: Assets,
 }
 
 impl SystemOneRequest {
@@ -284,6 +301,34 @@ impl SystemOneRequest {
             state: state.into(),
             model: None,
             questions,
+            #[cfg(feature = "images")]
+            assets: Assets::new(),
+        }
+    }
+
+    /// Sends `assets` with the request (feature `images`).
+    #[cfg(feature = "images")]
+    #[must_use]
+    pub fn with_assets(mut self, assets: Assets) -> Self {
+        self.assets = assets;
+        self
+    }
+
+    /// Whether the request has images or Box questions, which the API only accepts with
+    /// the `TypeSafe-Danger-Zone-Images: true` header. The HTTP client sends the header
+    /// when this is true; custom transports should too.
+    pub fn uses_images(&self) -> bool {
+        #[cfg(feature = "images")]
+        {
+            !self.assets.is_empty()
+                || self
+                    .questions
+                    .iter()
+                    .any(|(_, question)| matches!(question, Question::Box(_)))
+        }
+        #[cfg(not(feature = "images"))]
+        {
+            false
         }
     }
 
@@ -294,7 +339,9 @@ impl SystemOneRequest {
         self
     }
 
-    /// Checks the request against the documented API limits.
+    /// Checks the request against the documented API limits. With the `images` feature it
+    /// also checks the images: each one is referenced, its reference is within the length
+    /// limits, and its file is a PNG or JPEG of at most 16 MiB. Box questions need an image.
     pub fn validate(&self) -> Result<(), ValidationError> {
         if self
             .model
@@ -303,7 +350,21 @@ impl SystemOneRequest {
         {
             return Err(ValidationError::EmptyModel);
         }
-        self.questions.validate()
+        self.questions.validate()?;
+        #[cfg(feature = "images")]
+        {
+            if self.assets.is_empty() {
+                if let Some((id, _)) = self
+                    .questions
+                    .iter()
+                    .find(|(_, question)| matches!(question, Question::Box(_)))
+                {
+                    return Err(ValidationError::BoxWithoutImage { id: id.clone() });
+                }
+            }
+            self.assets.validate(&self.state, &self.questions)?;
+        }
+        Ok(())
     }
 }
 
@@ -440,5 +501,45 @@ mod tests {
         assert_eq!(key.clone(), QuestionKey::new("q"));
         assert_eq!(key.as_ref(), "q");
         assert_eq!(format!("{key:?}"), r#"QuestionKey("q")"#);
+    }
+
+    #[cfg(feature = "images")]
+    mod images {
+        use super::*;
+        use crate::{BoxQuestion, Image};
+
+        const PNG: &[u8] = include_bytes!("../tests/fixtures/red-rectangle.png");
+
+        #[test]
+        fn rejects_box_question_when_request_has_no_image() {
+            let request = request_with("mug", BoxQuestion::new("the mug in `photo`"));
+
+            assert!(request.uses_images());
+            assert_eq!(
+                request.validate(),
+                Err(ValidationError::BoxWithoutImage { id: "mug".into() })
+            );
+        }
+
+        #[test]
+        fn sends_assets_only_when_there_are_some() {
+            let plain = request_with("q", NoulQuestion::new("?"));
+            assert!(!plain.uses_images());
+            assert_eq!(serde_json::to_value(&plain).unwrap().get("assets"), None);
+
+            let mut assets = Assets::new();
+            let photo = assets.insert("img-1", Image::png(PNG.to_vec()));
+            let mut questions = Questions::new();
+            questions.add("mug", BoxQuestion::new("the mug in `photo`"));
+            let request =
+                SystemOneRequest::new(json!({"photo": photo}), questions).with_assets(assets);
+
+            assert!(request.uses_images());
+            assert_eq!(request.validate(), Ok(()));
+            let wire = serde_json::to_value(&request).unwrap();
+            assert_eq!(wire["assets"]["img-1"]["format"], "png");
+            let restored: SystemOneRequest = serde_json::from_value(wire).unwrap();
+            assert_eq!(restored, request);
+        }
     }
 }
