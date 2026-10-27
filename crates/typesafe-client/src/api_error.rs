@@ -335,7 +335,7 @@ mod tests {
         assert_eq!(error.kind, ApiErrorKind::Authentication);
         assert_eq!(error.error_type.as_deref(), Some("authentication_error"));
         assert_eq!(error.message, "Cannot authenticate with the server.");
-        assert!(error.field_errors().is_empty());
+        assert_eq!(error.field_errors(), []);
         assert_eq!(
             error.to_string(),
             "TypeSafe API returned 401 (authentication failed): Cannot authenticate with the server. [request req_1]"

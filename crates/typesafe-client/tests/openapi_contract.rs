@@ -163,7 +163,7 @@ fn schema_examples_deserialize_into_wire_types() {
     request.validate().unwrap();
     serde_json::from_value::<SystemOneResponse>(response).unwrap();
     let models: ModelList = serde_json::from_value(models).unwrap();
-    assert!(!models.models.is_empty());
+    assert_ne!(models.models.len(), 0);
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn endpoint_examples(content_type: &str, location: &str) -> Vec<(String, Value)>
 fn endpoint_examples_deserialize_validate_and_answer_their_questions() {
     let requests = endpoint_examples("application/json", "request");
     let responses = endpoint_examples("application/json", "response");
-    assert!(!requests.is_empty());
+    assert_ne!(requests.len(), 0);
 
     for (name, request) in requests {
         if name == "box" && !cfg!(feature = "images") {

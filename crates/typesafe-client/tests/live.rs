@@ -38,9 +38,9 @@ fn assert_probability(value: f64, what: &str) {
 async fn lists_available_models() {
     let models = live_client().list_models().await.unwrap();
 
-    assert!(!models.models.is_empty());
+    assert_ne!(models.models.len(), 0);
     for model in &models.models {
-        assert!(!model.name.is_empty());
+        assert_ne!(model.name, "", "{model:?}");
         // The spec documents `YYYY-MM-DD`, the server sends a full timestamp; both start
         // with the calendar date.
         assert!(starts_with_calendar_date(&model.release_date), "{model:?}");
