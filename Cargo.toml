@@ -12,6 +12,7 @@ repository = "https://github.com/JedimEmO/typesafe-client"
 
 [workspace.dependencies]
 async-trait = "0.1.80"
+base64 = "0.22"
 fastrand = "2.3"
 httpdate = "1.0"
 indexmap = { version = "2.7", features = ["serde"] }

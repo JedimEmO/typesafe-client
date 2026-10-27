@@ -38,9 +38,9 @@ fn assert_probability(value: f64, what: &str) {
 async fn lists_available_models() {
     let models = live_client().list_models().await.unwrap();
 
-    assert!(!models.models.is_empty());
+    assert_ne!(models.models.len(), 0);
     for model in &models.models {
-        assert!(!model.name.is_empty());
+        assert_ne!(model.name, "", "{model:?}");
         // The spec documents `YYYY-MM-DD`, the server sends a full timestamp; both start
         // with the calendar date.
         assert!(starts_with_calendar_date(&model.release_date), "{model:?}");
@@ -164,4 +164,106 @@ async fn vendored_openapi_spec_matches_live_spec() {
         live["info"]["version"],
         vendored["info"]["version"]
     );
+}
+
+#[tokio::test]
+#[ignore = "calls the live TypeSafe API; needs TYPESAFE_API_KEY"]
+async fn reports_a_request_over_the_context_length() {
+    let state = "The quick brown fox jumps over the lazy dog. ".repeat(9_000);
+    let mut questions = Questions::new();
+    questions.add("fox", NoulQuestion::new("Is a fox mentioned?"));
+
+    let error = live_client()
+        .system_one(state, questions)
+        .send()
+        .await
+        .unwrap_err();
+
+    let api = error.api().expect("an API error");
+    assert!(api.is_context_length_exceeded(), "{api}");
+}
+
+#[tokio::test]
+#[ignore = "calls the live TypeSafe API; needs TYPESAFE_API_KEY"]
+async fn accepts_the_long_context_header() {
+    let mut questions = Questions::new();
+    let greeting = questions.add("greeting", NoulQuestion::new("Is this a greeting?"));
+
+    let response = live_client()
+        .system_one("Hello there!", questions)
+        .long_context()
+        .send()
+        .await
+        .unwrap();
+
+    assert_probability(response.answer(&greeting).unwrap().noul, "greeting");
+}
+
+/// A 320×320 white PNG with a red rectangle from (100, 80) to (220, 200).
+#[cfg(feature = "images")]
+const RED_RECTANGLE: &[u8] = include_bytes!("fixtures/red-rectangle.png");
+
+#[cfg(feature = "images")]
+#[tokio::test]
+#[ignore = "calls the live TypeSafe API; needs TYPESAFE_API_KEY"]
+async fn locates_a_red_rectangle_in_an_uploaded_image() {
+    use typesafe_client::{Assets, BoxQuestion, Image};
+
+    let mut assets = Assets::new();
+    let photo = assets.add(Image::png(RED_RECTANGLE.to_vec()));
+    let mut questions = Questions::new();
+    let red = questions.add(
+        "red",
+        NoulQuestion::new("Is there a red rectangle in `photo`?"),
+    );
+    let blue = questions.add(
+        "blue",
+        NoulQuestion::new("Is there a blue circle in `photo`?"),
+    );
+    let found = questions.add("where", BoxQuestion::new("the red rectangle in `photo`"));
+
+    let response = live_client()
+        .system_one(serde_json::json!({"photo": photo}), questions)
+        .assets(assets)
+        .send()
+        .await
+        .unwrap();
+
+    let red = response.answer(&red).unwrap().noul;
+    let blue = response.answer(&blue).unwrap().noul;
+    assert!(red > 0.5, "a red rectangle scored {red}");
+    assert!(blue < 0.5, "an absent blue circle scored {blue}");
+    let found = response.answer(&found).unwrap();
+    let (x, y) = found.bounds.center();
+    // The rectangle's centre is at (0.5, 0.4375); allow for an imprecise box.
+    assert!((0.3..=0.7).contains(&x), "{found:?}");
+    assert!((0.2..=0.7).contains(&y), "{found:?}");
+    if let Some(confidence) = found.confidence {
+        assert_probability(confidence, "box confidence");
+    }
+}
+
+#[cfg(feature = "images")]
+#[tokio::test]
+#[ignore = "calls the live TypeSafe API; needs TYPESAFE_API_KEY"]
+async fn sends_an_image_inside_question_instructions() {
+    use typesafe_client::{Assets, Image};
+
+    let mut assets = Assets::new();
+    let example = assets.add(Image::png(RED_RECTANGLE.to_vec()));
+    let mut questions = Questions::new();
+    let red = questions.add(
+        "red",
+        NoulQuestion::new(format!("Is the main shape in this image red: {example}?")),
+    );
+
+    let response = live_client()
+        .system_one("Answer about the image in the question.", questions)
+        .assets(assets)
+        .send()
+        .await
+        .unwrap();
+
+    let red = response.answer(&red).unwrap().noul;
+    assert!(red > 0.5, "a red rectangle scored {red}");
 }

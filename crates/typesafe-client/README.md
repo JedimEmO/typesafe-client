@@ -38,7 +38,8 @@ its question promises.
 - [Guide](#guide): [yes/no questions](#yesno-questions),
   [choices from an enum](#choices-from-an-enum), [choices from runtime values](#choices-from-runtime-values),
   [scores](#scores), [structured state](#structured-state),
-  [many questions at once](#many-questions-in-one-request), [configuration](#configuring-the-client),
+  [many questions at once](#many-questions-in-one-request), [images](#images-and-box-questions),
+  [configuration](#configuring-the-client),
   [retries and timeouts](#retries-and-timeouts), [errors](#handling-errors),
   [testing](#testing-code-that-uses-the-client), [without HTTP](#using-only-the-types)
 - [Examples](#examples)
@@ -49,7 +50,7 @@ its question promises.
 
 ```toml
 [dependencies]
-typesafe-client = "0.1"
+typesafe-client = "0.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -57,6 +58,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 |---|---|---|
 | `http` | yes | `Client`, the async HTTP client (reqwest with rustls) |
 | `fake` | no | `fake::FakeSystemOne`, an in-memory implementation for tests |
+| `images` | no | Images in requests and `BoxQuestion`. Experimental; see [images and Box questions](#images-and-box-questions) |
 
 Create an API key in the [TypeSafe console](https://console.typesafe.ai/keys) and make it
 available to your program:
@@ -97,9 +99,9 @@ async fn main() -> Result<(), typesafe_client::Error> {
 | Concept | In this crate |
 |---|---|
 | **State**: the content every question is about | `Content`: a string, a JSON object or a JSON array. Strings and `serde_json` values convert directly, and any `Serialize` type goes through `Content::json`. |
-| **Question**: one narrow judgment | `NoulQuestion` (yes/no), `ChoiceQuestion`, `EnumChoice` and `ValueChoice` (one of up to 255 options), `ScoreQuestion` (2 to 10 ordered levels) |
+| **Question**: one narrow judgment | `NoulQuestion` (yes/no), `ChoiceQuestion`, `EnumChoice` and `ValueChoice` (one of up to 255 options), `ScoreQuestion` (2 to 10 ordered levels), and with the `images` feature `BoxQuestion` (where something is in an image) |
 | **Key**: how you read an answer | `Questions::add(id, question)` returns a `QuestionKey`, typed by how its answer is read |
-| **Answer**: probabilities, not prose | `NoulAnswer` (`noul`), `ChoiceAnswer` and `TypedChoice<T>` (`choice`, `probabilities`, `confidence`), `ScoreAnswer` (`score`, level probabilities, `confidence`) |
+| **Answer**: probabilities, not prose | `NoulAnswer` (`noul`), `ChoiceAnswer` and `TypedChoice<T>` (`choice`, `probabilities`, `confidence`), `ScoreAnswer` (`score`, level probabilities, `confidence`), `BoxAnswer` (`bounds`, `confidence`) |
 
 Every question in a request sees the same state and is answered independently and in parallel,
 so extra questions in one request cost little. The question id only matches answers to
@@ -317,8 +319,80 @@ let keys: Vec<_> = hazards
 assert_eq!(questions.len(), keys.len());
 ```
 
-A request can carry about 32,000 tokens (roughly 150,000 characters), shared by the state and
-the questions.
+A request has two token limits: 64k for the state and all its questions together, and 32k for
+the state plus any one question. `.long_context()` on a call raises both to 262k. It costs the
+same per token but is slower and less accurate, so turn it on only for the requests that need
+it. See [models](https://docs.typesafe.ai/models) for the limits of each model.
+
+### Images and Box questions
+
+Images and Box questions need the `images` feature. TypeSafe marks both as experimental: the
+request format, the answers and the limits can change between API releases. The types behind
+the feature follow those changes, so they may change in minor releases of this crate.
+
+```toml
+[dependencies]
+typesafe-client = { version = "0.2", features = ["images"] }
+```
+
+An image can go anywhere text can go. Add it to the request's `Assets`, which returns a
+reference string, and write the reference where the image belongs:
+
+```rust,no_run
+# #[cfg(not(feature = "images"))]
+# fn main() {}
+# #[cfg(feature = "images")]
+use serde_json::json;
+# #[cfg(feature = "images")]
+use typesafe_client::{Assets, BoxQuestion, Client, Image, NoulQuestion, Questions};
+
+# #[cfg(feature = "images")]
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::from_env()?;
+    // Upright, and 280 to 1568 pixels on each side.
+    let (width, height) = (1568, 1176);
+    let mut assets = Assets::new();
+    let kitchen = assets.add(Image::jpeg(std::fs::read("kitchen.jpg")?));
+
+    let mut questions = Questions::new();
+    let visible = questions.add(
+        "mug_visible",
+        NoulQuestion::new("Is there a coffee mug in `photo`?"),
+    );
+    let mug = questions.add("mug", BoxQuestion::new("the coffee mug in `photo`"));
+
+    let response = client
+        .system_one(json!({"photo": kitchen}), questions)
+        .assets(assets)
+        .send()
+        .await?;
+
+    if response.answer(&visible)?.noul > 0.5 {
+        let mug = response.answer(&mug)?;
+        let crop = mug.bounds.padded(0.05).to_pixels(width, height);
+        println!("mug at {crop:?}, confidence {:?}", mug.confidence);
+    }
+    Ok(())
+}
+```
+
+Notice the Noul next to the Box. A Box always answers with a box, even when the target isn't
+in the image, so a yes/no question in the same request decides whether to use it. The box's
+edges are fractions of the image size; `to_pixels` converts them for one size, and `padded`
+moves each edge out before cropping.
+
+A reference also works inside text, as in `format!("Is this the dog in {poster}?")`, and as a
+Choice option's description. Each use sends another copy of the image to the model, and every
+copy counts toward the size and token limits. So an image that several questions look at
+belongs in the state once, referred to by path, like `photo` above.
+
+The client uploads each image as a multipart file part, and sends the
+`TypeSafe-Danger-Zone-Images: true` header for every request with images or a Box question.
+Validation checks that each image is referenced somewhere and is a PNG or JPEG of at most
+16 MiB. The API checks the rest, including the pixel size. It also ignores the EXIF
+orientation, so rotate photos upright before sending them. TypeSafe's
+[images guide](https://docs.typesafe.ai/images) lists every limit.
 
 ### Configuring the client
 
@@ -409,7 +483,8 @@ async fn main() {
 ```
 
 For a rejected request body (HTTP 422), `error.api()` gives the `ApiError`, and its
-`field_errors()` list what the server rejected.
+`field_errors()` list what the server rejected. A request longer than the model's context fails
+with an `ApiError` whose `is_context_length_exceeded()` is true.
 
 ### Testing code that uses the client
 
@@ -418,7 +493,7 @@ Let your code depend on `Arc<dyn SystemOne>`. In production that's the `Client`;
 
 ```toml
 [dev-dependencies]
-typesafe-client = { version = "0.1", features = ["fake"] }
+typesafe-client = { version = "0.2", features = ["fake"] }
 ```
 
 ```rust
@@ -465,8 +540,8 @@ async fn main() -> Result<(), Error> {
 
 The fake behaves like a careful API:
 
-- **Configure answers:** `set_noul`, `set_choice`, `set_choice_probabilities`, `set_score` or
-  `set_answer`, by question id or key.
+- **Configure answers:** `set_noul`, `set_choice`, `set_choice_probabilities`, `set_score`,
+  `set_box` (feature `images`) or `set_answer`, by question id or key.
 - **Script outcomes:** `push_response`, or `push_error` with an `ApiError` or
   `Error::Timeout(TransportError::new("timed out"))`.
 - **Inspect what was sent:** `requests`, `last_request`, `request_count`.
@@ -477,7 +552,7 @@ The fake behaves like a careful API:
 
 ```toml
 [dependencies]
-typesafe-client = { version = "0.1", default-features = false }
+typesafe-client = { version = "0.2", default-features = false }
 ```
 
 Without `http` you still get questions, keys, answers, validation, response verification and

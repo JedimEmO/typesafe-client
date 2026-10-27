@@ -4,6 +4,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 const EXCERPT_CHARS: usize = 500;
+const CONTEXT_EXCEEDED: &str = "max_tokens_exceeded";
 
 /// A non-success response from the API.
 #[derive(Debug, Clone, PartialEq)]
@@ -94,6 +95,13 @@ impl ApiError {
     pub fn field_errors(&self) -> Vec<FieldError> {
         self.body.as_ref().map(field_errors_in).unwrap_or_default()
     }
+
+    /// Whether the request was longer than the model's context length (a 400 with error
+    /// type `max_tokens_exceeded`). Shorten the state, ask fewer questions, send fewer or
+    /// smaller images, or turn on [long context](crate::CallOptions::long_context).
+    pub fn is_context_length_exceeded(&self) -> bool {
+        self.status == 400 && self.error_type.as_deref() == Some(CONTEXT_EXCEEDED)
+    }
 }
 
 impl fmt::Display for ApiError {
@@ -162,6 +170,11 @@ pub enum ApiErrorKind {
     NotFound,
     /// 408
     RequestTimeout,
+    /// 413: the body, an image, or the request with its images expanded is over a size
+    /// limit.
+    PayloadTooLarge,
+    /// 415: an unsupported `Content-Encoding`.
+    UnsupportedMediaType,
     /// 422: the body failed validation; see [`ApiError::field_errors`].
     UnprocessableEntity,
     /// 429
@@ -183,6 +196,8 @@ impl ApiErrorKind {
             403 => Self::PermissionDenied,
             404 => Self::NotFound,
             408 => Self::RequestTimeout,
+            413 => Self::PayloadTooLarge,
+            415 => Self::UnsupportedMediaType,
             422 => Self::UnprocessableEntity,
             429 => Self::RateLimited,
             529 => Self::Overloaded,
@@ -200,6 +215,8 @@ impl fmt::Display for ApiErrorKind {
             Self::PermissionDenied => "permission denied",
             Self::NotFound => "not found",
             Self::RequestTimeout => "request timeout",
+            Self::PayloadTooLarge => "payload too large",
+            Self::UnsupportedMediaType => "unsupported media type",
             Self::UnprocessableEntity => "invalid request body",
             Self::RateLimited => "rate limited",
             Self::Overloaded => "overloaded",
@@ -213,7 +230,16 @@ fn describe_body(body: &Value) -> (Option<String>, Option<String>) {
     let text = |value: Option<&Value>| value.and_then(Value::as_str).map(str::to_owned);
     match body.get("detail") {
         Some(Value::Object(detail)) => {
-            (text(detail.get("error_type")), text(detail.get("message")))
+            let error_type = text(detail.get("error_type"));
+            let message = text(detail.get("message")).or_else(|| {
+                error_type.as_deref().map(|error_type| match error_type {
+                    CONTEXT_EXCEEDED => {
+                        "the request is longer than the model's context length".to_owned()
+                    }
+                    other => other.to_owned(),
+                })
+            });
+            (error_type, message)
         }
         Some(Value::String(message)) => (None, Some(message.clone())),
         Some(Value::Array(_)) => {
@@ -277,6 +303,8 @@ fn canonical_reason(status: u16) -> Option<&'static str> {
         403 => "Forbidden",
         404 => "Not Found",
         408 => "Request Timeout",
+        413 => "Payload Too Large",
+        415 => "Unsupported Media Type",
         422 => "Unprocessable Entity",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
@@ -307,7 +335,7 @@ mod tests {
         assert_eq!(error.kind, ApiErrorKind::Authentication);
         assert_eq!(error.error_type.as_deref(), Some("authentication_error"));
         assert_eq!(error.message, "Cannot authenticate with the server.");
-        assert!(error.field_errors().is_empty());
+        assert_eq!(error.field_errors(), []);
         assert_eq!(
             error.to_string(),
             "TypeSafe API returned 401 (authentication failed): Cannot authenticate with the server. [request req_1]"
@@ -376,7 +404,36 @@ mod tests {
     }
 
     #[test]
+    fn recognises_context_length_errors_that_have_no_message() {
+        let body = br#"{"detail":{"error_type":"max_tokens_exceeded"}}"#;
+
+        let error = ApiError::from_response(400, body, None, None);
+
+        assert!(error.is_context_length_exceeded());
+        assert_eq!(
+            error.message,
+            "the request is longer than the model's context length"
+        );
+        assert!(!ApiError::new(400, "bad").is_context_length_exceeded());
+    }
+
+    #[test]
+    fn uses_the_error_type_as_message_when_the_detail_has_no_message() {
+        let error = ApiError::from_response(400, br#"{"detail":{"error_type":"odd"}}"#, None, None);
+
+        assert_eq!(error.message, "odd");
+    }
+
+    #[test]
     fn maps_statuses_to_kinds() {
+        assert_eq!(
+            ApiErrorKind::from_status(413),
+            ApiErrorKind::PayloadTooLarge
+        );
+        assert_eq!(
+            ApiErrorKind::from_status(415),
+            ApiErrorKind::UnsupportedMediaType
+        );
         assert_eq!(
             ApiErrorKind::from_status(403),
             ApiErrorKind::PermissionDenied

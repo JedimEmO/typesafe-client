@@ -45,6 +45,8 @@ jobs:
             flags: --no-default-features
           - name: fake only
             flags: --no-default-features --features fake
+          - name: images without HTTP
+            flags: --no-default-features --features images
           - name: all features
             flags: --all-features
     steps:
@@ -73,6 +75,12 @@ jobs:
       - name: Without HTTP
         if: matrix.os == 'ubuntu-latest'
         run: cargo test -p typesafe-client --no-default-features --lib --tests --locked
+      - name: Default features (doctests without images)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p typesafe-client --doc --locked
+      - name: Images without HTTP
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p typesafe-client --no-default-features --features images,fake --lib --tests --locked
 
   docs:
     name: Docs

@@ -14,6 +14,9 @@ pub enum Answer {
     Choice(ChoiceAnswer),
     /// Answer to a Score question.
     Score(ScoreAnswer),
+    /// Answer to a Box question (feature `images`).
+    #[cfg(feature = "images")]
+    Box(BoxAnswer),
 }
 
 impl Answer {
@@ -23,6 +26,8 @@ impl Answer {
             Self::Noul(_) => QuestionKind::Noul,
             Self::Choice(_) => QuestionKind::Choice,
             Self::Score(_) => QuestionKind::Score,
+            #[cfg(feature = "images")]
+            Self::Box(_) => QuestionKind::Box,
         }
     }
 }
@@ -42,6 +47,13 @@ impl From<ChoiceAnswer> for Answer {
 impl From<ScoreAnswer> for Answer {
     fn from(answer: ScoreAnswer) -> Self {
         Self::Score(answer)
+    }
+}
+
+#[cfg(feature = "images")]
+impl From<BoxAnswer> for Answer {
+    fn from(answer: BoxAnswer) -> Self {
+        Self::Box(answer)
     }
 }
 
@@ -203,6 +215,167 @@ impl ScoreAnswer {
     /// The description of `level`, as the question defined it.
     pub fn level_description(&self, level: usize) -> Option<&Content> {
         self.legend.get(&level.to_string())
+    }
+}
+
+/// The answer to a [`BoxQuestion`](crate::BoxQuestion): where the target is in the image.
+///
+/// There is no "not found" answer: a Box about something absent still returns a box. Ask a
+/// Noul in the same request to check that the target is there.
+#[cfg(feature = "images")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct BoxAnswer {
+    /// The box's edges as fractions of the image's size. Sent as `box`.
+    #[serde(rename = "box")]
+    pub bounds: BoxCoordinates,
+    /// How sure the model is of the box, from 0 to 1; `None` when the model gives no
+    /// confidence. There is no recommended threshold yet, so tune one on your own images.
+    pub confidence: Option<f64>,
+}
+
+#[cfg(feature = "images")]
+impl BoxAnswer {
+    /// An answer locating `bounds`, for fixtures and tests.
+    pub fn new(bounds: BoxCoordinates, confidence: Option<f64>) -> Self {
+        Self { bounds, confidence }
+    }
+}
+
+/// A box's edges as fractions of the image's size, measured from the top-left corner.
+///
+/// `left` and `right` are fractions of the width, `top` and `bottom` of the height, so the
+/// same box works at any image size. Each edge is from 0 to 1, with `left < right` and
+/// `top < bottom`.
+///
+/// ```
+/// use typesafe_client::BoxCoordinates;
+///
+/// let mug = BoxCoordinates::new(0.25, 0.82, 0.44, 0.84);
+/// let pixels = mug.to_pixels(1568, 1176);
+/// assert_eq!((pixels.left, pixels.top, pixels.right, pixels.bottom), (690, 294, 1317, 964));
+///
+/// // Before cropping, move each edge out by 5% of the image, staying inside it.
+/// let padded = mug.padded(0.05);
+/// assert_eq!(padded.top, 0.2);
+/// ```
+#[cfg(feature = "images")]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct BoxCoordinates {
+    /// Top edge, as a fraction of the image height from the top.
+    pub top: f64,
+    /// Bottom edge, as a fraction of the image height from the top.
+    pub bottom: f64,
+    /// Left edge, as a fraction of the image width from the left.
+    pub left: f64,
+    /// Right edge, as a fraction of the image width from the left.
+    pub right: f64,
+}
+
+#[cfg(feature = "images")]
+impl BoxCoordinates {
+    /// The whole image.
+    pub const FULL_IMAGE: Self = Self {
+        top: 0.0,
+        bottom: 1.0,
+        left: 0.0,
+        right: 1.0,
+    };
+
+    /// A box with these edges, in the API's order: top, bottom, left, right.
+    pub fn new(top: f64, bottom: f64, left: f64, right: f64) -> Self {
+        Self {
+            top,
+            bottom,
+            left,
+            right,
+        }
+    }
+
+    /// Width as a fraction of the image width.
+    pub fn width(&self) -> f64 {
+        (self.right - self.left).max(0.0)
+    }
+
+    /// Height as a fraction of the image height.
+    pub fn height(&self) -> f64 {
+        (self.bottom - self.top).max(0.0)
+    }
+
+    /// Area as a fraction of the image area.
+    pub fn area(&self) -> f64 {
+        self.width() * self.height()
+    }
+
+    /// The centre point as `(x, y)` fractions of the image width and height.
+    pub fn center(&self) -> (f64, f64) {
+        (
+            f64::midpoint(self.left, self.right),
+            f64::midpoint(self.top, self.bottom),
+        )
+    }
+
+    /// The box with each edge moved out by `fraction` of the image size, clamped to the
+    /// image. Pad a box before cropping when the crop must not cut off part of the target.
+    #[must_use]
+    pub fn padded(&self, fraction: f64) -> Self {
+        Self {
+            top: (self.top - fraction).clamp(0.0, 1.0),
+            bottom: (self.bottom + fraction).clamp(0.0, 1.0),
+            left: (self.left - fraction).clamp(0.0, 1.0),
+            right: (self.right + fraction).clamp(0.0, 1.0),
+        }
+    }
+
+    /// The box in pixels of an image `width` by `height` pixels, each edge rounded to the
+    /// nearest pixel and clamped to the image.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "each edge is clamped to the image size before the cast"
+    )]
+    pub fn to_pixels(&self, width: u32, height: u32) -> PixelBox {
+        let scale = |fraction: f64, size: u32| {
+            (fraction * f64::from(size))
+                .round()
+                .clamp(0.0, f64::from(size)) as u32
+        };
+        PixelBox {
+            left: scale(self.left, width),
+            top: scale(self.top, height),
+            right: scale(self.right, width),
+            bottom: scale(self.bottom, height),
+        }
+    }
+}
+
+/// A box in pixels, from [`BoxCoordinates::to_pixels`]. `right` and `bottom` are exclusive,
+/// as crop functions expect.
+#[cfg(feature = "images")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub struct PixelBox {
+    /// Left edge, in pixels from the left.
+    pub left: u32,
+    /// Top edge, in pixels from the top.
+    pub top: u32,
+    /// Right edge, in pixels from the left.
+    pub right: u32,
+    /// Bottom edge, in pixels from the top.
+    pub bottom: u32,
+}
+
+#[cfg(feature = "images")]
+impl PixelBox {
+    /// Width in pixels.
+    pub fn width(&self) -> u32 {
+        self.right.saturating_sub(self.left)
+    }
+
+    /// Height in pixels.
+    pub fn height(&self) -> u32 {
+        self.bottom.saturating_sub(self.top)
     }
 }
 
@@ -411,7 +584,7 @@ impl ModelList {
 
 /// How the answer behind a [`QuestionKey`] is read from a response.
 ///
-/// Implemented for [`NoulAnswer`], [`ChoiceAnswer`], [`ScoreAnswer`], [`Answer`],
+/// Implemented for [`NoulAnswer`], [`ChoiceAnswer`], [`ScoreAnswer`], `BoxAnswer`, [`Answer`],
 /// [`TypedChoice`](crate::TypedChoice) and [`ValueChoice`](crate::ValueChoice). Implement it
 /// for your own question types together with [`IntoQuestion`](crate::IntoQuestion).
 pub trait ReadAnswer {
@@ -459,6 +632,18 @@ impl ReadAnswer for ScoreAnswer {
         match answer {
             Answer::Score(score) => Ok(score),
             other => Err(wrong_kind(id, QuestionKind::Score, other)),
+        }
+    }
+}
+
+#[cfg(feature = "images")]
+impl ReadAnswer for BoxAnswer {
+    type Output<'a> = BoxAnswer;
+
+    fn read(id: &str, answer: &Answer) -> Result<BoxAnswer, AnswerError> {
+        match answer {
+            Answer::Box(found) => Ok(*found),
+            other => Err(wrong_kind(id, QuestionKind::Box, other)),
         }
     }
 }
@@ -721,5 +906,73 @@ mod tests {
             .unwrap()
             .noul;
         assert!((noul - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[cfg(feature = "images")]
+    #[test]
+    fn reads_box_answers_with_and_without_confidence() {
+        let response = response(&json!({
+            "mug": {"type": "box", "box": {"top": 0.25, "bottom": 0.82, "left": 0.44, "right": 0.84}, "confidence": 0.92},
+            "red": {"type": "box", "box": {"top": 0.2, "bottom": 0.66, "left": 0.19, "right": 0.68}, "confidence": null}
+        }));
+
+        let mug = response
+            .answer(&QuestionKey::<BoxAnswer>::new("mug"))
+            .unwrap();
+        let red = response
+            .answer(&QuestionKey::<BoxAnswer>::new("red"))
+            .unwrap();
+
+        assert_eq!(mug.bounds, BoxCoordinates::new(0.25, 0.82, 0.44, 0.84));
+        assert_eq!(mug.confidence, Some(0.92));
+        assert_eq!(red.confidence, None);
+        assert_eq!(
+            serde_json::to_value(Answer::from(mug)).unwrap()["box"]["left"],
+            json!(0.44)
+        );
+    }
+
+    #[cfg(feature = "images")]
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "edges of quarters and halves are exact in binary"
+    )]
+    fn measures_boxes_and_converts_them_to_pixels() {
+        let mug = BoxCoordinates::new(0.25, 0.75, 0.5, 1.0);
+
+        assert_eq!(mug.width(), 0.5);
+        assert_eq!(mug.height(), 0.5);
+        assert_eq!(mug.area(), 0.25);
+        assert_eq!(mug.center(), (0.75, 0.5));
+        let pixels = mug.to_pixels(400, 300);
+        assert_eq!(
+            pixels,
+            PixelBox {
+                left: 200,
+                top: 75,
+                right: 400,
+                bottom: 225
+            }
+        );
+        assert_eq!((pixels.width(), pixels.height()), (200, 150));
+    }
+
+    #[cfg(feature = "images")]
+    #[test]
+    fn keeps_padded_and_pixel_boxes_inside_the_image() {
+        let edge = BoxCoordinates::new(0.02, 0.99, 0.0, 0.5);
+
+        assert_eq!(edge.padded(0.05), BoxCoordinates::new(0.0, 1.0, 0.0, 0.55));
+        let overshoot = BoxCoordinates::new(-0.1, 1.2, -0.1, 1.2);
+        assert_eq!(
+            overshoot.to_pixels(10, 20),
+            PixelBox {
+                left: 0,
+                top: 0,
+                right: 10,
+                bottom: 20
+            }
+        );
     }
 }

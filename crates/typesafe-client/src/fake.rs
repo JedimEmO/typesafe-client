@@ -58,9 +58,10 @@ pub const UNCERTAIN_NOUL: f64 = 0.5;
 /// An in-memory [`SystemOne`] that answers from configuration instead of a model.
 ///
 /// Without configuration, a Noul answers [`UNCERTAIN_NOUL`], a Choice spreads probability
-/// evenly across its options (choosing the first), and a Score spreads it evenly across
-/// its levels. Confidence is derived from the distribution's entropy: 0 for an even
-/// spread, 1 for a certain answer. The real API computes confidence its own way.
+/// evenly across its options (choosing the first), a Score spreads it evenly across its
+/// levels, and a Box (feature `images`) covers the whole image with confidence 0.
+/// Confidence is derived from the distribution's entropy: 0 for an even spread, 1 for a
+/// certain answer. The real API computes confidence its own way.
 ///
 /// Responses are checked against the request like the HTTP client checks them, so a
 /// configured option or answer kind that doesn't match the question fails the call with
@@ -86,6 +87,8 @@ enum Configured {
     Noul(f64),
     Choice(Vec<(String, f64)>),
     Score(f64),
+    #[cfg(feature = "images")]
+    Box(crate::BoxCoordinates),
     Exact(Answer),
 }
 
@@ -123,6 +126,13 @@ impl FakeSystemOne {
     /// between the two nearest levels.
     pub fn set_score(&self, id: impl AsRef<str>, score: f64) {
         self.configure(id, Configured::Score(score));
+    }
+
+    /// Answers the Box question `id` with `bounds`, with confidence 1, from now on
+    /// (feature `images`).
+    #[cfg(feature = "images")]
+    pub fn set_box(&self, id: impl AsRef<str>, bounds: crate::BoxCoordinates) {
+        self.configure(id, Configured::Box(bounds));
     }
 
     /// Answers question `id` with exactly `answer` from now on.
@@ -279,6 +289,11 @@ fn uncertain_answer(question: &Question) -> Answer {
             let share = 1.0 / score.criteria.len().max(1) as f64;
             score_answer(&score.criteria, vec![share; score.criteria.len()])
         }
+        #[cfg(feature = "images")]
+        Question::Box(_) => Answer::Box(crate::BoxAnswer::new(
+            crate::BoxCoordinates::FULL_IMAGE,
+            Some(0.0),
+        )),
     }
 }
 
@@ -311,6 +326,8 @@ fn configured_answer(configured: &Configured, question: &Question) -> Answer {
             &question.criteria,
             split_score(*score, question.criteria.len()),
         ),
+        #[cfg(feature = "images")]
+        (Configured::Box(bounds), _) => Answer::Box(crate::BoxAnswer::new(*bounds, Some(1.0))),
         (Configured::Score(score), _) => Answer::Score(ScoreAnswer {
             score: *score,
             confidence: 1.0,
